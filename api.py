@@ -1,79 +1,118 @@
-from fastapi import FastAPI, Query, Header, HTTPException
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+from typing import Optional
 from app import PremiumFiscalAssistant
 
 # Initialisation FastAPI
-app = FastAPI(title="Assistant Fiscal Sénégalais")
+app = FastAPI(
+    title="Assistant Fiscal Sénégalais",
+    description="API spécialisée dans la fiscalité sénégalaise - Réponses strictement limitées aux questions fiscales",
+    version="1.0.0"
+)
 
-# Initialisation de l’assistant fiscal
+# Initialisation de l'assistant fiscal
 assistant = PremiumFiscalAssistant()
 
 # Configuration des logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fiscal-api")
 
-# Middleware CORS pour autoriser les appels depuis Streamlit ou autre front
+# Middleware CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # À sécuriser en prod
+    allow_origins=["*"],  # À restreindre en production
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
-@app.get("/fiscalite")
-def get_fiscalite(
+# ... ton code FastAPI reste inchangé au-dessus
+
+@app.get("/fiscalite", summary="Poser une question fiscale", response_description="Réponse de l'assistant fiscal")
+async def get_fiscalite(
     question: str = Query(
-        ..., 
-        description=("""
-""
-🎓 Vous êtes un expert fiscal sénégalais, spécialisé dans le droit fiscal, les démarches administratives, et la réglementation en vigueur au Sénégal.
-
-BJECTIF : Fournir des réponses claires, factuelles, précises, même si la formulation de la question est floue ou incomplète.
-
-FORMAT À RESPECTER :
-1. Commencez par une courte **introduction contextuelle** pour situer le sujet.
-2. Donnez une **explication claire et structurée**, en maximum **5 points clés**.
-3. Intégrez **des exemples concrets** si pertinent (ex : déclaration d’impôts, exonération, TVA, IR, etc.).
-4. Citez des **références officielles** si disponibles (loi fiscale, décret, ou lien vers https://www.dgid.sn/procedures-fiscales/).
-5. Terminez par une **conclusion ou une recommandation pratique** (ex : où s’adresser, quelles démarches effectuer).
-
-RÈGLES :
-- Répondez même si la question ne commence pas par "qu’est-ce que", "comment", etc.
-- Reformulez la question si elle est vague, pour en déduire l’intention de l’utilisateur.
-- Ne répondez **jamais avec "je ne sais pas"** si une information approchante existe dans la base.
-- Si le sujet est hors du domaine fiscal sénégalais, répondez : 
-  "Cette question sort du cadre fiscal. Pour plus d’informations, consultez https://www.dgid.sn/procedures-fiscales/"
-- Lorsque la question dépasse vos connaissances ou que l’information n’est pas disponible dans votre base, répondez poliment que vous ne pouvez pas répondre avec certitude et orientez l’utilisateur vers le site officiel : www.impotsetdomaines.gouv.sn
-Exemples :
-❌ Mauvais : "Je ne peux pas vous aider avec ça."
-✅ Bon : "Je n'ai pas cette information exacte pour le moment. Pour une réponse officielle et à jour, je vous recommande de consulter le site de la DGID : www.impotsetdomaines.gouv.sn"
-
-STYLE :
-- Langage simple, professionnel et accessible au public.
-- Utilisez des **puces (•)** ou des **numéros (1. 2. 3.)** pour structurer la réponse.
-- Évitez les répétitions, et synthétisez l’essentiel.
-
-
-N'oubliez pas : vous êtes un assistant fiscal premium destiné à **éclairer les citoyens**, pas à réciter la loi.
-""")
+        ...,
+        min_length=3,
+        max_length=500,
+        description="Posez votre question sur la fiscalité sénégalaise (impôts, taxes, déclarations, etc.)",
+        example="Quelles sont les démarches pour obtenir un quitus fiscal ?"
     ),
-    x_api_key: str = Header(default=None)  # Clé API facultative
+    strict: Optional[bool] = Query(
+        True,
+        description="Mode strict (True par défaut) - Ne répond qu'aux questions clairement fiscales"
+    )
 ):
-    # Clé API optionnelle à activer si besoin
-    API_KEY = "ma-cle-secrete"
-    if x_api_key and x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Accès non autorisé. Clé invalide.")
+    try:
+        # Liste de salutations simples
+        salutations = [
+            "bonjour", "salut", "hello", "bonsoir", "hi", "coucou",
+            "yo", "allo", "bjr"
+        ]
 
-    # Vérification de la question
-    if not question.strip() or len(question) < 3:
-        return {
-            "message": "❌ Veuillez poser une question fiscale plus précise."
-        }
+        question_lower = question.strip().lower()
 
-    logger.info(f"[QUESTION] {question}")
-    response = assistant.agent.run(question)
-    logger.info(f"[RÉPONSE] {response}")
+        if question_lower in salutations:
+            return {
+                "reponse": "👋 Bonjour ! Je suis là pour répondre à vos questions fiscales. Que puis-je faire pour vous ?"
+            }
 
-    return {"message": response}
+        # Validation de la question
+        if len(question_lower) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail="La question doit contenir au moins 3 caractères"
+            )
+
+        logger.info(f"[QUESTION RECUE] {question}")
+        
+        # Traitement par l'assistant fiscal
+        response = assistant.agent.invoke({"input": question})
+        print("🔍 DEBUG - Réponse brute de l'agent:", response)
+
+        response_content = response['output']
+        
+        # # Vérification supplémentaire en mode strict
+        # if strict and not assistant._est_question_fiscale(question):
+        #     raise HTTPException(status_code=400, detail="Question non fiscale...")
+                
+        # logger.info(f"[REPONSE ENVOYEE] {response_content[:200]}...")
+        return {"reponse": response_content}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ERREUR] {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Une erreur est survenue lors du traitement de votre question. Veuillez réessayer plus tard."
+        )
+
+
+@app.get("/sante", summary="Vérification rapide de l'état de l'API")
+async def check_health():
+    try:
+        # Vérification Elasticsearch
+        if not assistant.es.ping():
+            raise HTTPException(
+                status_code=503,
+                detail="Elasticsearch indisponible"
+            )
+
+        # Test minimal du modèle
+        test_response = assistant.recherche_fiscale("test santé")
+        if not isinstance(test_response, str) or len(test_response) == 0:
+            raise HTTPException(
+                status_code=503,
+                detail="Le modèle fiscal ne répond pas correctement"
+            )
+
+        return {"status": "ok"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Erreur système: {str(e)}"
+        )
